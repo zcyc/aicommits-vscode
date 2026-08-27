@@ -1,0 +1,7 @@
+.git/**
+.vscode/**
+.gitignore
+.vscodeignore
+Makefile
+test/**
+*.vsix

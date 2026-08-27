@@ -1,0 +1,78 @@
+{
+  "name": "aicommits-vscode",
+  "displayName": "aicommits for VS Code",
+  "description": "Generate a Git commit message with aicommits and fill the VS Code commit box.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "scripts": {
+    "test": "node test/smoke.js"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "3.6.0"
+  },
+  "extensionDependencies": [
+    "vscode.git"
+  ],
+  "main": "./extension.js",
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "This extension runs a configurable shell command in the Git repository."
+    }
+  },
+  "activationEvents": [
+    "onCommand:aicommits.generateCommitMessage"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "aicommits.generateCommitMessage",
+        "title": "aicommits: Generate Commit Message",
+        "icon": "$(sparkle)",
+        "enablement": "isWorkspaceTrusted"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "aicommits.generateCommitMessage",
+          "when": "isWorkspaceTrusted && scmProvider == git"
+        }
+      ],
+      "scm/title": [
+        {
+          "command": "aicommits.generateCommitMessage",
+          "when": "scmProvider == git && isWorkspaceTrusted",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "aicommits",
+      "properties": {
+        "aicommits.command": {
+          "type": "string",
+          "default": "aicommits",
+          "description": "Full shell command used to generate the commit message. It runs in the Git repository root."
+        },
+        "aicommits.output": {
+          "type": "string",
+          "enum": [
+            "clipboard",
+            "stdout"
+          ],
+          "enumDescriptions": [
+            "Read the generated message from the system clipboard. Use this for commands that explicitly copy their result.",
+            "Read the generated message from standard output. This is the default for aicommits in VS Code."
+          ],
+          "default": "stdout",
+          "description": "Where the configured command returns the commit message."
+        }
+      }
+    }
+  }
+}
