@@ -1,14 +1,16 @@
 # aicommits for VS Code
 
-在 VS Code 的 Git 提交框中使用 [aicommits](https://github.com/jerryshell/aicommits) 根据暂存的变更生成提交信息。
+[简体中文](README.zh-CN.md)
 
-本扩展可以替代 GitHub Copilot 的 `Generate Commit Message`：调用本地安装的 `aicommits`，再将生成结果写回 VS Code 的 Git 提交输入框。
+Use [aicommits](https://github.com/jerryshell/aicommits) to generate a Git commit message from staged changes and fill it into VS Code's Git commit input box.
 
-![VS Code 源代码管理面板](docs/aicommits-vscode.png)
+This extension can replace GitHub Copilot's `Generate Commit Message`: it runs the locally installed `aicommits` command and writes the generated result back to VS Code.
 
-## 前置条件
+![VS Code Source Control panel](docs/aicommits-vscode.png)
 
-请先安装并配置 [aicommits](https://github.com/jerryshell/aicommits)：
+## Prerequisites
+
+Install and configure [aicommits](https://github.com/jerryshell/aicommits) first:
 
 ```bash
 git clone https://github.com/jerryshell/aicommits.git
@@ -19,36 +21,34 @@ bun link
 aicommits setup
 ```
 
-确认命令可用：
+Verify that the command is available:
 
 ```bash
 aicommits --help
 ```
 
-## 安装扩展
+## Install the extension
 
-在本仓库目录执行：
+From this repository, run:
 
 ```bash
 npm install
 make install
 ```
 
-`make install` 需要 VS Code 的 `code` 命令可用。也可以先执行 `make package`，再在 VS Code 中通过“从 VSIX 安装”安装生成的 `.vsix` 文件。
+`make install` requires the VS Code `code` command to be available. Alternatively, run `make package` and install the generated `.vsix` file with [VS Code's extension installation workflow](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace).
 
-安装 VSIX 的详细说明见 [VS Code 扩展安装文档](https://code.visualstudio.com/docs/configure/extensions/extension-marketplace)。
+## Usage
 
-## 使用
+1. Open a Git repository in VS Code and stage the changes you want to commit.
+2. Click the `aicommits` button in the Source Control panel, or run **aicommits: Generate Commit Message** from the Command Palette.
+3. The generated commit message is filled into the commit input box. Review it and commit.
 
-1. 在 VS Code 中打开 Git 仓库，并暂存要提交的变更。
-2. 在源代码管理面板点击 `aicommits` 按钮，或从命令面板运行 **aicommits: Generate Commit Message**。
-3. 生成的提交信息会自动填入提交框，确认后提交。
+If the extension cannot find the `aicommits` command after installation or configuration changes, restart VS Code.
 
-首次使用或修改配置后，可能需要重启 VS Code，使扩展能找到 `aicommits` 命令。
+## Configuration
 
-## 配置
-
-默认配置如下：
+The default configuration is:
 
 ```json
 {
@@ -57,24 +57,24 @@ make install
 }
 ```
 
-如果使用自定义命令或希望从剪贴板读取结果，可在 VS Code 设置中修改 `aicommits.command` 和 `aicommits.output`。
+Change `aicommits.command` and `aicommits.output` in VS Code Settings to use a custom command or read the result from the system clipboard.
 
-扩展要求工作区已信任，并依赖 VS Code 内置的 Git 扩展。
+The workspace must be trusted. The extension also depends on VS Code's built-in Git extension.
 
-## 实现原理
+## How it works
 
-1. `package.json` 注册 `aicommits.generateCommitMessage` 命令，并将它显示在命令面板和 Git 源代码管理面板中。
-2. 扩展通过 VS Code 内置的 `vscode.git` API 查找当前 Git 仓库；打开多个仓库时先让用户选择。
-3. 扩展从设置中读取 `aicommits.command`，在仓库根目录执行该命令。默认情况下，从标准输出读取生成的提交信息，也支持从系统剪贴板读取。
-4. 读取到非空结果后，将它写入 Git 仓库的提交输入框；取消操作、命令超时或执行失败时显示错误提示。
+1. `package.json` registers the `aicommits.generateCommitMessage` command and exposes it in the Command Palette and the Git Source Control panel.
+2. The extension uses the built-in `vscode.git` API to find the current Git repository. If multiple repositories are open, it asks you to choose one.
+3. It reads `aicommits.command` from the settings and runs the command in the repository root. By default, it reads the generated message from standard output; it can also read from the system clipboard.
+4. After receiving a non-empty result, it writes the message to the repository's commit input box. Cancellation, timeouts, and command failures are shown as error notifications.
 
-相关 VS Code 文档：
+Related VS Code documentation:
 
-- [扩展命令 API](https://code.visualstudio.com/api/extension-guides/command)
-- [激活事件](https://code.visualstudio.com/api/references/activation-events)
-- [Git 扩展 API](https://github.com/microsoft/vscode/blob/main/extensions/git/README.md)
+- [Commands API](https://code.visualstudio.com/api/extension-guides/command)
+- [Activation Events](https://code.visualstudio.com/api/references/activation-events)
+- [Git extension API](https://github.com/microsoft/vscode/blob/main/extensions/git/README.md)
 
-## 开发
+## Development
 
 ```bash
 npm test
