@@ -2,6 +2,10 @@
 
 在 VS Code 的 Git 提交框中使用 [aicommits](https://github.com/jerryshell/aicommits) 根据暂存的变更生成提交信息。
 
+本扩展可以替代 GitHub Copilot 的 `Generate Commit Message`：调用本地安装的 `aicommits`，再将生成结果写回 VS Code 的 Git 提交输入框。
+
+![VS Code 源代码管理面板](docs/aicommits-vscode.png)
+
 ## 前置条件
 
 请先安装并配置 [aicommits](https://github.com/jerryshell/aicommits)：
