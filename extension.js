@@ -3,12 +3,13 @@ const { exec } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execAsync = promisify(exec);
+let activeRun;
 
 function isCommandNotFound(error) {
   if (!error || typeof error !== 'object') return false;
-  const text = `${error.message ?? ''}\n${error.stderr ?? ''}`;
+  const stderr = `${error.stderr ?? ''}`;
   return error.code === 'ENOENT'
-    || /command not found|not recognized as an internal or external command/i.test(text);
+    || /command not found|not recognized as an internal or external command/i.test(stderr);
 }
 
 async function findGitRepository(resource) {
@@ -49,68 +50,82 @@ async function generateCommitMessage(resource) {
     throw new Error('Trust this workspace before running aicommits.');
   }
 
-  const repository = await findGitRepository(resource);
-  if (repository === undefined) return;
-  if (!repository?.rootUri) {
-    throw new Error('No Git repository is open. Open a Git project first.');
-  }
+  const run = { controller: new AbortController() };
+  activeRun?.controller.abort();
+  activeRun = run;
 
-  const configuration = vscode.workspace.getConfiguration('aicommits');
-  const command = configuration.get('command', 'aicommits');
-  const output = configuration.get('output', 'stdout');
-
-  if (typeof command !== 'string' || !command.trim()) {
-    const error = new Error('aicommits.command 未配置，请在 VS Code 设置中配置。');
-    error.openSettings = true;
-    throw error;
-  }
-  if (output !== 'clipboard' && output !== 'stdout') {
-    throw new Error('aicommits.output must be clipboard or stdout.');
-  }
-
-  await vscode.window.withProgress(
-    {
-      location: vscode.ProgressLocation.SourceControl,
-      title: 'Generating commit message…',
-      cancellable: true
-    },
-    async (_progress, token) => {
-      const controller = new AbortController();
-      const cancellation = token.onCancellationRequested(() => controller.abort());
-      let stdout;
-      try {
-        ({ stdout } = await execAsync(command, {
-          cwd: repository.rootUri.fsPath,
-          maxBuffer: 1024 * 1024,
-          windowsHide: true,
-          timeout: 5 * 60 * 1000,
-          signal: controller.signal
-        }));
-      } catch (error) {
-        if (token.isCancellationRequested) return;
-        if (isCommandNotFound(error) && error && typeof error === 'object') {
-          error.openSettings = true;
-          error.message = '配置的命令不存在，请检查 VS Code 设置中的 aicommits.command。';
-        }
-        throw error;
-      } finally {
-        cancellation.dispose();
-      }
-
-      const message = output === 'stdout'
-        ? stdout.trim()
-        : (await vscode.env.clipboard.readText()).trim();
-      if (!message) {
-        throw new Error(
-          output === 'stdout'
-            ? 'The command did not print a commit message.'
-            : 'The command did not provide a commit message in the clipboard.'
-        );
-      }
-
-      repository.inputBox.value = message;
+  try {
+    const repository = await findGitRepository(resource);
+    if (activeRun !== run) return;
+    if (repository === undefined) return;
+    if (!repository?.rootUri) {
+      throw new Error('No Git repository is open. Open a Git project first.');
     }
-  );
+
+    const configuration = vscode.workspace.getConfiguration('aicommits');
+    const command = configuration.get('command', 'aicommits');
+    const output = configuration.get('output', 'stdout');
+
+    if (typeof command !== 'string' || !command.trim()) {
+      const error = new Error('aicommits.command 未配置，请在 VS Code 设置中配置。');
+      error.openSettings = true;
+      throw error;
+    }
+    if (output !== 'clipboard' && output !== 'stdout') {
+      throw new Error('aicommits.output must be clipboard or stdout.');
+    }
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.SourceControl,
+        title: 'Generating commit message…',
+        cancellable: true
+      },
+      async (_progress, token) => {
+        if (activeRun !== run || token.isCancellationRequested) return;
+        const cancellation = token.onCancellationRequested(() => run.controller.abort());
+        let stdout;
+        try {
+          ({ stdout } = await execAsync(command, {
+            cwd: repository.rootUri.fsPath,
+            maxBuffer: 1024 * 1024,
+            windowsHide: true,
+            timeout: 5 * 60 * 1000,
+            signal: run.controller.signal
+          }));
+        } catch (error) {
+          if (token.isCancellationRequested || activeRun !== run) return;
+          if (isCommandNotFound(error) && error && typeof error === 'object') {
+            error.openSettings = true;
+            error.message = '配置的命令不存在，请检查 VS Code 设置中的 aicommits.command。';
+          }
+          throw error;
+        } finally {
+          cancellation.dispose();
+        }
+
+        if (activeRun !== run || token.isCancellationRequested) return;
+        const message = output === 'stdout'
+          ? stdout.trim()
+          : (await vscode.env.clipboard.readText()).trim();
+        if (!message) {
+          throw new Error(
+            output === 'stdout'
+              ? 'The command did not print a commit message.'
+              : 'The command did not provide a commit message in the clipboard.'
+          );
+        }
+
+        if (activeRun === run && !token.isCancellationRequested) {
+          repository.inputBox.value = message;
+        }
+      }
+    );
+  } finally {
+    if (activeRun === run) {
+      activeRun = undefined;
+    }
+  }
 }
 
 function activate(context) {
