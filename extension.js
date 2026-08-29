@@ -3,13 +3,15 @@ const { exec } = require('node:child_process');
 const { promisify } = require('node:util');
 
 const execAsync = promisify(exec);
-let activeRun;
+const activeRuns = new Map();
+let nextRunId = 0;
 
 function isCommandNotFound(error) {
   if (!error || typeof error !== 'object') return false;
   const stderr = `${error.stderr ?? ''}`;
   return error.code === 'ENOENT'
-    || /command not found|not recognized as an internal or external command/i.test(stderr);
+    || /command not found|not recognized as an internal or external command/i.test(stderr)
+    || (error.code === 127 && /No such file or directory/i.test(stderr));
 }
 
 async function findGitRepository(resource) {
@@ -50,13 +52,11 @@ async function generateCommitMessage(resource) {
     throw new Error('Trust this workspace before running aicommits.');
   }
 
-  const run = { controller: new AbortController() };
-  activeRun?.controller.abort();
-  activeRun = run;
+  const run = { controller: new AbortController(), id: ++nextRunId };
+  let repositoryKey;
 
   try {
     const repository = await findGitRepository(resource);
-    if (activeRun !== run) return;
     if (repository === undefined) return;
     if (!repository?.rootUri) {
       throw new Error('No Git repository is open. Open a Git project first.');
@@ -75,6 +75,13 @@ async function generateCommitMessage(resource) {
       throw new Error('aicommits.output must be clipboard or stdout.');
     }
 
+    repositoryKey = repository.rootUri.fsPath;
+    const currentRun = activeRuns.get(repositoryKey);
+    if (currentRun?.id > run.id) return;
+    currentRun?.controller.abort();
+    activeRuns.set(repositoryKey, run);
+    const isCurrentRun = () => activeRuns.get(repositoryKey) === run;
+
     await vscode.window.withProgress(
       {
         location: vscode.ProgressLocation.SourceControl,
@@ -82,7 +89,7 @@ async function generateCommitMessage(resource) {
         cancellable: true
       },
       async (_progress, token) => {
-        if (activeRun !== run || token.isCancellationRequested) return;
+        if (!isCurrentRun() || token.isCancellationRequested) return;
         const cancellation = token.onCancellationRequested(() => run.controller.abort());
         let stdout;
         try {
@@ -94,7 +101,7 @@ async function generateCommitMessage(resource) {
             signal: run.controller.signal
           }));
         } catch (error) {
-          if (token.isCancellationRequested || activeRun !== run) return;
+          if (token.isCancellationRequested || !isCurrentRun()) return;
           if (isCommandNotFound(error) && error && typeof error === 'object') {
             error.openSettings = true;
             error.message = '配置的命令不存在，请检查 VS Code 设置中的 aicommits.command。';
@@ -104,10 +111,17 @@ async function generateCommitMessage(resource) {
           cancellation.dispose();
         }
 
-        if (activeRun !== run || token.isCancellationRequested) return;
-        const message = output === 'stdout'
-          ? stdout.trim()
-          : (await vscode.env.clipboard.readText()).trim();
+        if (!isCurrentRun() || token.isCancellationRequested) return;
+        let message;
+        try {
+          message = output === 'stdout'
+            ? stdout.trim()
+            : (await vscode.env.clipboard.readText()).trim();
+        } catch (error) {
+          if (token.isCancellationRequested || !isCurrentRun()) return;
+          throw error;
+        }
+        if (!isCurrentRun() || token.isCancellationRequested) return;
         if (!message) {
           throw new Error(
             output === 'stdout'
@@ -116,14 +130,14 @@ async function generateCommitMessage(resource) {
           );
         }
 
-        if (activeRun === run && !token.isCancellationRequested) {
+        if (isCurrentRun() && !token.isCancellationRequested) {
           repository.inputBox.value = message;
         }
       }
     );
   } finally {
-    if (activeRun === run) {
-      activeRun = undefined;
+    if (repositoryKey !== undefined && activeRuns.get(repositoryKey) === run) {
+      activeRuns.delete(repositoryKey);
     }
   }
 }

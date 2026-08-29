@@ -8,11 +8,16 @@ const repository = {
 const handlers = [];
 const errors = [];
 let commands = ["printf 'generated message\\n'"];
+let output = 'stdout';
+let repositories = [repository];
+let clipboardReader = async () => '';
 const vscode = {
   workspace: {
     isTrusted: true,
     getConfiguration: () => ({
-      get: (key, fallback) => key === 'command' ? commands.shift() : fallback
+      get: (key, fallback) => key === 'command'
+        ? commands.shift()
+        : key === 'output' ? output : fallback
     })
   },
   extensions: {
@@ -20,8 +25,10 @@ const vscode = {
       isActive: true,
       exports: {
         getAPI: () => ({
-          repositories: [repository],
-          getRepository: () => repository
+          repositories,
+          getRepository: uri => repositories.find(
+            candidate => candidate.rootUri.fsPath === uri.fsPath
+          )
         })
       }
     })
@@ -40,7 +47,7 @@ const vscode = {
       return { dispose() {} };
     }
   },
-  env: { clipboard: { readText: async () => '' } }
+  env: { clipboard: { readText: () => clipboardReader() } }
 };
 
 const originalLoad = Module._load;
@@ -72,6 +79,51 @@ try {
     assert.equal(error[1], undefined, 'failed commands must not be marked as missing');
     assert.match(error[0], /Command failed:/);
     console.log('command detection regression test passed');
+
+    const repositoryB = {
+      rootUri: { fsPath: '/private/tmp' },
+      inputBox: { value: '' }
+    };
+    repositories = [repository, repositoryB];
+    commands = [
+      "sleep 0.2; printf 'repository A\\n'",
+      "sleep 0.01; printf 'repository B\\n'"
+    ];
+    const firstRepositoryRun = handlers[0]({ scheme: 'file', fsPath: process.cwd() });
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const secondRepositoryRun = handlers[0]({ scheme: 'file', fsPath: '/private/tmp' });
+    await Promise.all([firstRepositoryRun, secondRepositoryRun]);
+    assert.equal(repository.inputBox.value, 'repository A');
+    assert.equal(repositoryB.inputBox.value, 'repository B');
+    console.log('cross-repository regression test passed');
+
+    repositories = [repository];
+    output = 'clipboard';
+    commands = ['printf done', 'printf done'];
+    let releaseClipboard;
+    let clipboardReads = 0;
+    clipboardReader = async () => clipboardReads++ === 0
+      ? new Promise(resolve => { releaseClipboard = resolve; })
+      : 'repository B';
+    const firstClipboardRun = handlers[0]();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    const secondClipboardRun = handlers[0]();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    releaseClipboard('');
+    const errorCount = errors.length;
+    await Promise.all([firstClipboardRun, secondClipboardRun]);
+    assert.equal(errors.length, errorCount, 'superseded clipboard runs must not show errors');
+    assert.equal(repository.inputBox.value, 'repository B');
+    console.log('clipboard cancellation regression test passed');
+
+    output = 'stdout';
+    clipboardReader = async () => '';
+    commands = ['/definitely/missing-aicommits-command'];
+    const missingCommandErrorCount = errors.length;
+    await handlers[0]();
+    const missingCommandError = errors[missingCommandErrorCount];
+    assert.equal(missingCommandError[1], 'Open Settings');
+    console.log('missing command regression test passed');
   })().catch(error => {
     console.error(error);
     process.exitCode = 1;
