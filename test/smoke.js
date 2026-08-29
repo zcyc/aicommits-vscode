@@ -11,6 +11,7 @@ let commands = ["printf 'generated message\\n'"];
 let output = 'stdout';
 let repositories = [repository];
 let clipboardReader = async () => '';
+let cancelProgressAfter;
 const vscode = {
   workspace: {
     isTrusted: true,
@@ -34,10 +35,28 @@ const vscode = {
     })
   },
   window: {
-    withProgress: async (_options, callback) => callback(null, {
-      isCancellationRequested: false,
-      onCancellationRequested: () => ({ dispose() {} })
-    }),
+    withProgress: async (_options, callback) => {
+      let cancelled = false;
+      const listeners = new Set();
+      const token = {
+        get isCancellationRequested() { return cancelled; },
+        onCancellationRequested: listener => {
+          listeners.add(listener);
+          return { dispose: () => listeners.delete(listener) };
+        }
+      };
+      const timer = cancelProgressAfter === undefined
+        ? undefined
+        : setTimeout(() => {
+          cancelled = true;
+          for (const listener of listeners) listener();
+        }, cancelProgressAfter);
+      try {
+        return await callback(null, token);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
     showErrorMessage: async (...args) => { errors.push(args); }
   },
   ProgressLocation: { SourceControl: 1 },
@@ -79,6 +98,14 @@ try {
     assert.equal(error[1], undefined, 'failed commands must not be marked as missing');
     assert.match(error[0], /Command failed:/);
     console.log('command detection regression test passed');
+
+    commands = ["printf 'command not found\\n' >&2; exit 1"];
+    const stderrFalsePositiveCount = errors.length;
+    await handlers[0]();
+    const stderrFalsePositive = errors[stderrFalsePositiveCount];
+    assert.equal(stderrFalsePositive[1], undefined, 'arbitrary stderr must not open settings');
+    assert.match(stderrFalsePositive[0], /Command failed:/);
+    console.log('stderr command detection regression test passed');
 
     const repositoryB = {
       rootUri: { fsPath: '/private/tmp' },
@@ -124,6 +151,20 @@ try {
     const missingCommandError = errors[missingCommandErrorCount];
     assert.equal(missingCommandError[1], 'Open Settings');
     console.log('missing command regression test passed');
+
+    if (process.platform !== 'win32') {
+      cancelProgressAfter = 50;
+      commands = ['sleep 2 &'];
+      const cancellationStart = Date.now();
+      await handlers[0]();
+      const cancellationElapsed = Date.now() - cancellationStart;
+      cancelProgressAfter = undefined;
+      assert.ok(
+        cancellationElapsed < 1000,
+        `cancelling a background command took ${cancellationElapsed}ms`
+      );
+      console.log('process group cancellation regression test passed');
+    }
   })().catch(error => {
     console.error(error);
     process.exitCode = 1;

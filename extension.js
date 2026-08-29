@@ -1,17 +1,136 @@
 const vscode = require('vscode');
-const { exec } = require('node:child_process');
-const { promisify } = require('node:util');
+const { spawn } = require('node:child_process');
 
-const execAsync = promisify(exec);
 const activeRuns = new Map();
+const commandTimeout = 5 * 60 * 1000;
 let nextRunId = 0;
 
 function isCommandNotFound(error) {
   if (!error || typeof error !== 'object') return false;
   const stderr = `${error.stderr ?? ''}`;
   return error.code === 'ENOENT'
-    || /command not found|not recognized as an internal or external command/i.test(stderr)
-    || (error.code === 127 && /No such file or directory/i.test(stderr));
+    || error.code === 127
+    || (process.platform === 'win32'
+      && error.code === 1
+      && /^\s*['"].+['"] is not recognized as an internal or external command,\s*[\r\n]+operable program or batch file\.\s*$/i.test(stderr));
+}
+
+function terminateProcessTree(child) {
+  if (!child?.pid) return;
+  if (process.platform === 'win32') {
+    const killer = spawn(
+      'taskkill',
+      ['/pid', String(child.pid), '/T', '/F'],
+      { stdio: 'ignore', windowsHide: true }
+    );
+    killer.on('error', () => child.kill());
+    killer.on('close', code => { if (code !== 0) child.kill(); });
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    child.kill('SIGTERM');
+  }
+}
+
+function executeCommand(command, options, signal) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, {
+      ...options,
+      shell: true,
+      detached: process.platform !== 'win32'
+    });
+    const maxBuffer = options.maxBuffer ?? 1024 * 1024;
+    let stdout = '';
+    let stderr = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let maxBufferStream;
+    let killed = false;
+    let timedOut = false;
+    let settled = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      killed = true;
+      terminateProcessTree(child);
+    }, commandTimeout);
+    const terminate = () => {
+      killed = true;
+      terminateProcessTree(child);
+    };
+    const cleanup = () => {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', terminate);
+    };
+    const finish = callback => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      callback();
+    };
+    const collect = (stream, chunk) => {
+      const bytes = Buffer.byteLength(chunk);
+      if (stream === 'stdout') {
+        stdout += chunk;
+        stdoutBytes += bytes;
+        if (stdoutBytes > maxBuffer) maxBufferStream = stream;
+      } else {
+        stderr += chunk;
+        stderrBytes += bytes;
+        if (stderrBytes > maxBuffer) maxBufferStream = stream;
+      }
+      if (maxBufferStream) terminate();
+    };
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', chunk => collect('stdout', chunk));
+    child.stderr.on('data', chunk => collect('stderr', chunk));
+    child.on('error', error => finish(() => {
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    }));
+    child.on('close', (code, signalName) => finish(() => {
+      if (maxBufferStream) {
+        const error = new Error(`${maxBufferStream} maxBuffer length exceeded`);
+        error.code = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      if (timedOut) {
+        const error = new Error(`Command failed: ${command}\n`);
+        error.code = null;
+        error.signal = 'SIGTERM';
+        error.killed = true;
+        error.stdout = stdout;
+        error.stderr = stderr;
+        reject(error);
+        return;
+      }
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      const error = new Error(`Command failed: ${command}\n${stderr}`);
+      error.code = code;
+      error.signal = signalName;
+      error.killed = killed;
+      error.stdout = stdout;
+      error.stderr = stderr;
+      reject(error);
+    }));
+
+    if (signal.aborted) {
+      terminate();
+    } else {
+      signal.addEventListener('abort', terminate, { once: true });
+    }
+  });
 }
 
 async function findGitRepository(resource) {
@@ -93,13 +212,11 @@ async function generateCommitMessage(resource) {
         const cancellation = token.onCancellationRequested(() => run.controller.abort());
         let stdout;
         try {
-          ({ stdout } = await execAsync(command, {
+          ({ stdout } = await executeCommand(command, {
             cwd: repository.rootUri.fsPath,
             maxBuffer: 1024 * 1024,
-            windowsHide: true,
-            timeout: 5 * 60 * 1000,
-            signal: run.controller.signal
-          }));
+            windowsHide: true
+          }, run.controller.signal));
         } catch (error) {
           if (token.isCancellationRequested || !isCurrentRun()) return;
           if (isCommandNotFound(error) && error && typeof error === 'object') {
