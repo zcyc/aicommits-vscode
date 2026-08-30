@@ -12,6 +12,7 @@ let output = 'stdout';
 let repositories = [repository];
 let clipboardReader = async () => '';
 let cancelProgressAfter;
+let cancelCurrentProgress;
 const vscode = {
   workspace: {
     isTrusted: true,
@@ -45,16 +46,20 @@ const vscode = {
           return { dispose: () => listeners.delete(listener) };
         }
       };
+      const requestCancellation = () => {
+        if (cancelled) return;
+        cancelled = true;
+        for (const listener of listeners) listener();
+      };
+      cancelCurrentProgress = requestCancellation;
       const timer = cancelProgressAfter === undefined
         ? undefined
-        : setTimeout(() => {
-          cancelled = true;
-          for (const listener of listeners) listener();
-        }, cancelProgressAfter);
+        : setTimeout(requestCancellation, cancelProgressAfter);
       try {
         return await callback(null, token);
       } finally {
         if (timer !== undefined) clearTimeout(timer);
+        if (cancelCurrentProgress === requestCancellation) cancelCurrentProgress = undefined;
       }
     },
     showErrorMessage: async (...args) => { errors.push(args); }
@@ -143,6 +148,42 @@ try {
     assert.equal(repository.inputBox.value, 'repository B');
     console.log('clipboard cancellation regression test passed');
 
+    commands = ['printf done', 'printf done'];
+    clipboardReads = 0;
+    let releaseHangingClipboard;
+    clipboardReader = async () => clipboardReads++ === 0
+      ? new Promise(resolve => { releaseHangingClipboard = resolve; })
+      : 'repository C';
+    const hangingClipboardRun = handlers[0]();
+    await new Promise(resolve => setTimeout(resolve, 100));
+    await handlers[0]();
+    const hangingRunSettled = await Promise.race([
+      hangingClipboardRun.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 100))
+    ]);
+    assert.equal(hangingRunSettled, true, 'superseded clipboard reads must be cancellable');
+    releaseHangingClipboard('ignored');
+    await hangingClipboardRun;
+    console.log('clipboard hang cancellation regression test passed');
+
+    commands = ['printf done'];
+    let releaseCancelledClipboard;
+    clipboardReader = async () => new Promise(resolve => {
+      releaseCancelledClipboard = resolve;
+      cancelCurrentProgress();
+    });
+    cancelProgressAfter = undefined;
+    const cancelledClipboardRun = handlers[0]();
+    const cancelledRunSettled = await Promise.race([
+      cancelledClipboardRun.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 200))
+    ]);
+    cancelProgressAfter = undefined;
+    assert.equal(cancelledRunSettled, true, 'user cancellation must stop clipboard reads');
+    releaseCancelledClipboard('ignored');
+    await cancelledClipboardRun;
+    console.log('user clipboard cancellation regression test passed');
+
     output = 'stdout';
     clipboardReader = async () => '';
     commands = ['/definitely/missing-aicommits-command'];
@@ -152,6 +193,19 @@ try {
     assert.equal(missingCommandError[1], 'Open Settings');
     console.log('missing command regression test passed');
 
+    repositories = [{
+      rootUri: { fsPath: '/definitely/missing-aicommits-dir' },
+      inputBox: { value: '' }
+    }];
+    commands = ['printf ok'];
+    const missingDirectoryErrorCount = errors.length;
+    await handlers[0]();
+    const missingDirectoryError = errors[missingDirectoryErrorCount];
+    assert.equal(missingDirectoryError[1], undefined, 'missing cwd must not open command settings');
+    assert.match(missingDirectoryError[0], /ENOENT/);
+    console.log('missing directory regression test passed');
+
+    repositories = [repository];
     if (process.platform !== 'win32') {
       cancelProgressAfter = 50;
       commands = ['sleep 2 &'];

@@ -8,10 +8,9 @@ let nextRunId = 0;
 function isCommandNotFound(error) {
   if (!error || typeof error !== 'object') return false;
   const stderr = `${error.stderr ?? ''}`;
-  return error.code === 'ENOENT'
-    || error.code === 127
+  return (process.platform !== 'win32' && error.code === 127)
     || (process.platform === 'win32'
-      && error.code === 1
+      && error.code === 9009
       && /^\s*['"].+['"] is not recognized as an internal or external command,\s*[\r\n]+operable program or batch file\.\s*$/i.test(stderr));
 }
 
@@ -51,15 +50,15 @@ function executeCommand(command, options, signal) {
     let killed = false;
     let timedOut = false;
     let settled = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      killed = true;
-      terminateProcessTree(child);
-    }, commandTimeout);
     const terminate = () => {
+      if (killed) return;
       killed = true;
       terminateProcessTree(child);
     };
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, commandTimeout);
     const cleanup = () => {
       clearTimeout(timeout);
       signal.removeEventListener('abort', terminate);
@@ -75,11 +74,11 @@ function executeCommand(command, options, signal) {
       if (stream === 'stdout') {
         stdout += chunk;
         stdoutBytes += bytes;
-        if (stdoutBytes > maxBuffer) maxBufferStream = stream;
+        if (!maxBufferStream && stdoutBytes > maxBuffer) maxBufferStream = stream;
       } else {
         stderr += chunk;
         stderrBytes += bytes;
-        if (stderrBytes > maxBuffer) maxBufferStream = stream;
+        if (!maxBufferStream && stderrBytes > maxBuffer) maxBufferStream = stream;
       }
       if (maxBufferStream) terminate();
     };
@@ -130,6 +129,28 @@ function executeCommand(command, options, signal) {
     } else {
       signal.addEventListener('abort', terminate, { once: true });
     }
+  });
+}
+
+function readClipboard(signal) {
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      reject(new Error('Clipboard read cancelled.'));
+    };
+    const cleanup = () => signal.removeEventListener('abort', onAbort);
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    vscode.env.clipboard.readText().then(value => {
+      cleanup();
+      resolve(value);
+    }, error => {
+      cleanup();
+      reject(error);
+    });
   });
 }
 
@@ -210,45 +231,47 @@ async function generateCommitMessage(resource) {
       async (_progress, token) => {
         if (!isCurrentRun() || token.isCancellationRequested) return;
         const cancellation = token.onCancellationRequested(() => run.controller.abort());
-        let stdout;
         try {
-          ({ stdout } = await executeCommand(command, {
-            cwd: repository.rootUri.fsPath,
-            maxBuffer: 1024 * 1024,
-            windowsHide: true
-          }, run.controller.signal));
-        } catch (error) {
-          if (token.isCancellationRequested || !isCurrentRun()) return;
-          if (isCommandNotFound(error) && error && typeof error === 'object') {
-            error.openSettings = true;
-            error.message = '配置的命令不存在，请检查 VS Code 设置中的 aicommits.command。';
+          let stdout;
+          try {
+            ({ stdout } = await executeCommand(command, {
+              cwd: repository.rootUri.fsPath,
+              maxBuffer: 1024 * 1024,
+              windowsHide: true
+            }, run.controller.signal));
+          } catch (error) {
+            if (token.isCancellationRequested || !isCurrentRun()) return;
+            if (isCommandNotFound(error) && error && typeof error === 'object') {
+              error.openSettings = true;
+              error.message = '配置的命令不存在，请检查 VS Code 设置中的 aicommits.command。';
+            }
+            throw error;
           }
-          throw error;
+
+          if (!isCurrentRun() || token.isCancellationRequested) return;
+          let message;
+          try {
+            message = output === 'stdout'
+              ? stdout.trim()
+              : (await readClipboard(run.controller.signal)).trim();
+          } catch (error) {
+            if (token.isCancellationRequested || !isCurrentRun()) return;
+            throw error;
+          }
+          if (!isCurrentRun() || token.isCancellationRequested) return;
+          if (!message) {
+            throw new Error(
+              output === 'stdout'
+                ? 'The command did not print a commit message.'
+                : 'The command did not provide a commit message in the clipboard.'
+            );
+          }
+
+          if (isCurrentRun() && !token.isCancellationRequested) {
+            repository.inputBox.value = message;
+          }
         } finally {
           cancellation.dispose();
-        }
-
-        if (!isCurrentRun() || token.isCancellationRequested) return;
-        let message;
-        try {
-          message = output === 'stdout'
-            ? stdout.trim()
-            : (await vscode.env.clipboard.readText()).trim();
-        } catch (error) {
-          if (token.isCancellationRequested || !isCurrentRun()) return;
-          throw error;
-        }
-        if (!isCurrentRun() || token.isCancellationRequested) return;
-        if (!message) {
-          throw new Error(
-            output === 'stdout'
-              ? 'The command did not print a commit message.'
-              : 'The command did not provide a commit message in the clipboard.'
-          );
-        }
-
-        if (isCurrentRun() && !token.isCancellationRequested) {
-          repository.inputBox.value = message;
         }
       }
     );
