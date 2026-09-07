@@ -112,7 +112,7 @@ function executeCommand(command, options, signal) {
         return;
       }
       if (timedOut) {
-        const error = new Error(`Command failed: ${command}\n`);
+        const error = new Error(`Command timed out after ${commandTimeout / 60000} minutes.`);
         error.code = null;
         error.signal = 'SIGTERM';
         error.killed = true;
@@ -125,7 +125,7 @@ function executeCommand(command, options, signal) {
         resolve({ stdout, stderr });
         return;
       }
-      const error = new Error(`Command failed: ${command}\n${stderr}`);
+      const error = new Error(`Command failed:\n${stderr}`);
       error.code = code;
       error.signal = signalName;
       error.killed = killed;

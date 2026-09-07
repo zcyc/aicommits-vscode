@@ -129,6 +129,13 @@ try {
     assert.match(error[0], /Command failed:/);
     console.log('command detection regression test passed');
 
+    const secret = 'aicommits-test-secret';
+    commands = [`${nodeCommand('process.exit(1)')} ${secret}`];
+    await handlers[0]();
+    assert.equal(errors[errors.length - 1][1], undefined);
+    assert.equal(errors[errors.length - 1][0].includes(secret), false);
+    console.log('command secrecy regression test passed');
+
     commands = [nodeCommand('process.exit(127)')];
     const intentionalExitErrorCount = errors.length;
     await handlers[0]();

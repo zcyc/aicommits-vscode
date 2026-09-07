@@ -66,7 +66,7 @@ The workspace must be trusted. The extension also depends on VS Code's built-in 
 1. `package.json` registers the `aicommits.generateCommitMessage` command and exposes it in the Command Palette and the Git Source Control panel.
 2. The extension uses the built-in `vscode.git` API to find the current Git repository. If multiple repositories are open, it asks you to choose one.
 3. It reads `aicommits.command` from the settings and runs the command in the repository root. By default, it reads the generated message from standard output; it can also read from the system clipboard.
-4. After receiving a non-empty result, it writes the message to the repository's commit input box. Cancellation, timeouts, and command failures are shown as error notifications.
+4. After receiving a non-empty result, it writes the message to the repository's commit input box. User cancellation stops the current run silently; timeouts and command failures are shown as error notifications.
 
 Related VS Code documentation:
 
