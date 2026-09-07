@@ -2,8 +2,10 @@ const vscode = require('vscode');
 const { spawn } = require('node:child_process');
 
 const activeRuns = new Map();
+const runningRuns = new Set();
 const commandTimeout = 5 * 60 * 1000;
 let nextRunId = 0;
+let deactivated = false;
 
 function isCommandNotFound(error) {
   if (!error || typeof error !== 'object') return false;
@@ -196,19 +198,34 @@ async function findGitRepository(resource) {
 }
 
 async function generateCommitMessage(resource) {
+  if (deactivated) return;
   if (!vscode.workspace.isTrusted) {
     throw new Error('Trust this workspace before running aicommits.');
   }
 
-  const run = { controller: new AbortController(), id: ++nextRunId };
+  let resolveRun;
+  const run = {
+    controller: new AbortController(),
+    id: ++nextRunId,
+    done: new Promise(resolve => { resolveRun = resolve; })
+  };
   let repositoryKey;
 
   try {
     const repository = await findGitRepository(resource);
+    if (deactivated || run.controller.signal.aborted) return;
     if (repository === undefined) return;
     if (!repository?.rootUri) {
       throw new Error('No Git repository is open. Open a Git project first.');
     }
+
+    repositoryKey = repository.rootUri.fsPath;
+    const currentRun = activeRuns.get(repositoryKey);
+    if (currentRun?.id > run.id) return;
+    currentRun?.controller.abort();
+    activeRuns.set(repositoryKey, run);
+    runningRuns.add(run);
+    const isCurrentRun = () => activeRuns.get(repositoryKey) === run;
 
     const configuration = vscode.workspace.getConfiguration('aicommits');
     const command = configuration.get('command', 'aicommits');
@@ -222,13 +239,6 @@ async function generateCommitMessage(resource) {
     if (output !== 'clipboard' && output !== 'stdout') {
       throw new Error('aicommits.output must be clipboard or stdout.');
     }
-
-    repositoryKey = repository.rootUri.fsPath;
-    const currentRun = activeRuns.get(repositoryKey);
-    if (currentRun?.id > run.id) return;
-    currentRun?.controller.abort();
-    activeRuns.set(repositoryKey, run);
-    const isCurrentRun = () => activeRuns.get(repositoryKey) === run;
 
     await vscode.window.withProgress(
       {
@@ -287,10 +297,13 @@ async function generateCommitMessage(resource) {
     if (repositoryKey !== undefined && activeRuns.get(repositoryKey) === run) {
       activeRuns.delete(repositoryKey);
     }
+    runningRuns.delete(run);
+    resolveRun();
   }
 }
 
 function activate(context) {
+  deactivated = false;
   context.subscriptions.push(
     vscode.commands.registerCommand(
       'aicommits.generateCommitMessage',
@@ -315,4 +328,12 @@ function activate(context) {
   );
 }
 
-module.exports = { activate };
+function deactivate() {
+  deactivated = true;
+  const runs = [...runningRuns];
+  for (const run of runs) run.controller.abort();
+  activeRuns.clear();
+  return Promise.all(runs.map(run => run.done));
+}
+
+module.exports = { activate, deactivate };

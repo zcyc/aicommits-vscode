@@ -1,5 +1,17 @@
 const assert = require('node:assert/strict');
 const Module = require('node:module');
+const { tmpdir } = require('node:os');
+
+const shellQuote = value => process.platform === 'win32'
+  ? `"${value.replaceAll('"', '\\"')}"`
+  : `'${value.replaceAll("'", "'\\''")}'`;
+const nodeCommand = script => `${shellQuote(process.execPath)} -e ${shellQuote(script)}`;
+const printCommand = message => nodeCommand(
+  `process.stdout.write(${JSON.stringify(message)})`
+);
+const delayedPrintCommand = (delay, message) => nodeCommand(
+  `setTimeout(() => process.stdout.write(${JSON.stringify(message)}), ${delay})`
+);
 
 const repository = {
   rootUri: { fsPath: process.cwd() },
@@ -7,7 +19,7 @@ const repository = {
 };
 const handlers = [];
 const errors = [];
-let commands = ["printf 'generated message\\n'"];
+let commands = [printCommand('generated message\n')];
 let output = 'stdout';
 let repositories = [repository];
 let clipboardReader = async () => '';
@@ -80,15 +92,16 @@ Module._load = (request, parent, isMain) => (
 );
 
 try {
-  require('../extension').activate({ subscriptions: [] });
+  const extension = require('../extension');
+  extension.activate({ subscriptions: [] });
   (async () => {
     await handlers[0]({ rootUri: { scheme: 'file', fsPath: process.cwd() } });
     assert.equal(repository.inputBox.value, 'generated message');
     console.log('stdout smoke test passed');
 
     commands = [
-      "sleep 0.2; printf 'old\\n'",
-      "sleep 0.01; printf 'new\\n'"
+      delayedPrintCommand(200, 'old\n'),
+      delayedPrintCommand(10, 'new\n')
     ];
     const firstRun = handlers[0]();
     await new Promise(resolve => setImmediate(resolve));
@@ -97,14 +110,26 @@ try {
     assert.equal(repository.inputBox.value, 'new', 'latest invocation must win');
     console.log('concurrency regression test passed');
 
-    commands = ["printf 'command not found' >/dev/null; exit 1"];
+    repository.inputBox.value = 'keep current message';
+    commands = [delayedPrintCommand(200, 'stale\n'), ''];
+    const staleRun = handlers[0]();
+    await new Promise(resolve => setImmediate(resolve));
+    const invalidReplacementRun = handlers[0]();
+    await Promise.all([staleRun, invalidReplacementRun]);
+    assert.equal(repository.inputBox.value, 'keep current message');
+    assert.equal(errors[errors.length - 1][1], 'Open Settings');
+    console.log('invalid replacement cancellation regression test passed');
+
+    commands = [nodeCommand(
+      "process.stdout.write('command not found'); process.exit(1)"
+    )];
     await handlers[0]();
     const error = errors[errors.length - 1];
     assert.equal(error[1], undefined, 'failed commands must not be marked as missing');
     assert.match(error[0], /Command failed:/);
     console.log('command detection regression test passed');
 
-    commands = ['exit 127'];
+    commands = [nodeCommand('process.exit(127)')];
     const intentionalExitErrorCount = errors.length;
     await handlers[0]();
     const intentionalExitError = errors[intentionalExitErrorCount];
@@ -112,7 +137,9 @@ try {
     assert.match(intentionalExitError[0], /Command failed:/);
     console.log('intentional exit code regression test passed');
 
-    commands = ["printf 'command not found\\n' >&2; exit 1"];
+    commands = [nodeCommand(
+      "process.stderr.write('command not found\\n'); process.exit(1)"
+    )];
     const stderrFalsePositiveCount = errors.length;
     await handlers[0]();
     const stderrFalsePositive = errors[stderrFalsePositiveCount];
@@ -121,17 +148,17 @@ try {
     console.log('stderr command detection regression test passed');
 
     const repositoryB = {
-      rootUri: { fsPath: '/private/tmp' },
+      rootUri: { fsPath: tmpdir() },
       inputBox: { value: '' }
     };
     repositories = [repository, repositoryB];
     commands = [
-      "sleep 0.2; printf 'repository A\\n'",
-      "sleep 0.01; printf 'repository B\\n'"
+      delayedPrintCommand(200, 'repository A\n'),
+      delayedPrintCommand(10, 'repository B\n')
     ];
     const firstRepositoryRun = handlers[0]({ scheme: 'file', fsPath: process.cwd() });
     await new Promise(resolve => setTimeout(resolve, 100));
-    const secondRepositoryRun = handlers[0]({ scheme: 'file', fsPath: '/private/tmp' });
+    const secondRepositoryRun = handlers[0]({ scheme: 'file', fsPath: tmpdir() });
     await Promise.all([firstRepositoryRun, secondRepositoryRun]);
     assert.equal(repository.inputBox.value, 'repository A');
     assert.equal(repositoryB.inputBox.value, 'repository B');
@@ -139,7 +166,7 @@ try {
 
     repositories = [repository];
     output = 'clipboard';
-    commands = ['printf done', 'printf done'];
+    commands = [printCommand('done'), printCommand('done')];
     let releaseClipboard;
     let clipboardReads = 0;
     clipboardReader = async () => clipboardReads++ === 0
@@ -156,7 +183,7 @@ try {
     assert.equal(repository.inputBox.value, 'repository B');
     console.log('clipboard cancellation regression test passed');
 
-    commands = ['printf done', 'printf done'];
+    commands = [printCommand('done'), printCommand('done')];
     clipboardReads = 0;
     let releaseHangingClipboard;
     clipboardReader = async () => clipboardReads++ === 0
@@ -174,7 +201,7 @@ try {
     await hangingClipboardRun;
     console.log('clipboard hang cancellation regression test passed');
 
-    commands = ['printf done'];
+    commands = [printCommand('done')];
     let releaseCancelledClipboard;
     clipboardReader = async () => new Promise(resolve => {
       releaseCancelledClipboard = resolve;
@@ -194,7 +221,7 @@ try {
 
     output = 'stdout';
     clipboardReader = async () => '';
-    commands = ['/definitely/missing-aicommits-command'];
+    commands = ['definitely-missing-aicommits-command'];
     const missingCommandErrorCount = errors.length;
     await handlers[0]();
     const missingCommandError = errors[missingCommandErrorCount];
@@ -205,7 +232,7 @@ try {
       rootUri: { fsPath: '/definitely/missing-aicommits-dir' },
       inputBox: { value: '' }
     }];
-    commands = ['printf ok'];
+    commands = [printCommand('ok')];
     const missingDirectoryErrorCount = errors.length;
     await handlers[0]();
     const missingDirectoryError = errors[missingDirectoryErrorCount];
@@ -239,7 +266,7 @@ try {
       );
       console.log('forced process cancellation regression test passed');
 
-      commands = [`${process.execPath} -e "process.stdout.write('x'.repeat(1024 * 1024 + 1))"`];
+      commands = [nodeCommand("process.stdout.write('x'.repeat(1024 * 1024 + 1))")];
       const maxBufferErrorCount = errors.length;
       await handlers[0]();
       const maxBufferError = errors[maxBufferErrorCount];
@@ -247,6 +274,23 @@ try {
       assert.match(maxBufferError[0], /stdout maxBuffer length exceeded/);
       console.log('max buffer regression test passed');
     }
+
+    commands = [process.platform === 'win32'
+      ? nodeCommand('setTimeout(() => {}, 2000)')
+      : 'trap "" TERM; sleep 2'];
+    const deactivationRun = handlers[0]();
+    await new Promise(resolve => setImmediate(resolve));
+    const deactivationStart = Date.now();
+    const deactivation = extension.deactivate();
+    assert.ok(deactivation && typeof deactivation.then === 'function');
+    await deactivation;
+    const deactivationSettled = await Promise.race([
+      deactivationRun.then(() => true),
+      new Promise(resolve => setTimeout(() => resolve(false), 1500))
+    ]);
+    assert.equal(deactivationSettled, true, 'deactivation must cancel active commands');
+    assert.ok(Date.now() - deactivationStart < 1500);
+    console.log('deactivation cleanup regression test passed');
   })().catch(error => {
     console.error(error);
     process.exitCode = 1;
