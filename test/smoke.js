@@ -104,6 +104,14 @@ try {
     assert.match(error[0], /Command failed:/);
     console.log('command detection regression test passed');
 
+    commands = ['exit 127'];
+    const intentionalExitErrorCount = errors.length;
+    await handlers[0]();
+    const intentionalExitError = errors[intentionalExitErrorCount];
+    assert.equal(intentionalExitError[1], undefined, 'exit 127 must not imply a missing command');
+    assert.match(intentionalExitError[0], /Command failed:/);
+    console.log('intentional exit code regression test passed');
+
     commands = ["printf 'command not found\\n' >&2; exit 1"];
     const stderrFalsePositiveCount = errors.length;
     await handlers[0]();
@@ -218,6 +226,26 @@ try {
         `cancelling a background command took ${cancellationElapsed}ms`
       );
       console.log('process group cancellation regression test passed');
+
+      cancelProgressAfter = 50;
+      commands = ['trap "" TERM; sleep 2'];
+      const ignoredSignalCancellationStart = Date.now();
+      await handlers[0]();
+      const ignoredSignalCancellationElapsed = Date.now() - ignoredSignalCancellationStart;
+      cancelProgressAfter = undefined;
+      assert.ok(
+        ignoredSignalCancellationElapsed < 1800,
+        `cancelling a SIGTERM-ignoring command took ${ignoredSignalCancellationElapsed}ms`
+      );
+      console.log('forced process cancellation regression test passed');
+
+      commands = [`${process.execPath} -e "process.stdout.write('x'.repeat(1024 * 1024 + 1))"`];
+      const maxBufferErrorCount = errors.length;
+      await handlers[0]();
+      const maxBufferError = errors[maxBufferErrorCount];
+      assert.equal(maxBufferError[1], undefined);
+      assert.match(maxBufferError[0], /stdout maxBuffer length exceeded/);
+      console.log('max buffer regression test passed');
     }
   })().catch(error => {
     console.error(error);

@@ -4,6 +4,10 @@
   "description": "Generate a Git commit message with aicommits and fill the VS Code commit box.",
   "version": "0.2.0",
   "publisher": "local",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/zcyc/aicommits-vscode.git"
+  },
   "license": "MIT",
   "engines": {
     "vscode": "^1.106.0"
@@ -40,7 +44,7 @@
       "commandPalette": [
         {
           "command": "aicommits.generateCommitMessage",
-          "when": "isWorkspaceTrusted && scmProvider == git"
+          "when": "isWorkspaceTrusted"
         }
       ],
       "scm/title": [

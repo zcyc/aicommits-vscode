@@ -8,13 +8,15 @@ let nextRunId = 0;
 function isCommandNotFound(error) {
   if (!error || typeof error !== 'object') return false;
   const stderr = `${error.stderr ?? ''}`;
-  return (process.platform !== 'win32' && error.code === 127)
+  return (process.platform !== 'win32'
+      && error.code === 127
+      && /(?:^|\r?\n)\s*(?:[^\s:]+\/)?(?:sh|bash|zsh|dash|ksh):[^\r\n]*(?:command not found|not found|no such file or directory)(?::[^\r\n]*)?\s*$/im.test(stderr))
     || (process.platform === 'win32'
       && error.code === 9009
       && /^\s*['"].+['"] is not recognized as an internal or external command,\s*[\r\n]+operable program or batch file\.\s*$/i.test(stderr));
 }
 
-function terminateProcessTree(child) {
+function terminateProcessTree(child, signalName = 'SIGTERM') {
   if (!child?.pid) return;
   if (process.platform === 'win32') {
     const killer = spawn(
@@ -28,9 +30,9 @@ function terminateProcessTree(child) {
   }
 
   try {
-    process.kill(-child.pid, 'SIGTERM');
+    process.kill(-child.pid, signalName);
   } catch {
-    child.kill('SIGTERM');
+    child.kill(signalName);
   }
 }
 
@@ -50,10 +52,14 @@ function executeCommand(command, options, signal) {
     let killed = false;
     let timedOut = false;
     let settled = false;
+    let forceKillTimer;
     const terminate = () => {
       if (killed) return;
       killed = true;
       terminateProcessTree(child);
+      forceKillTimer = setTimeout(() => {
+        terminateProcessTree(child, 'SIGKILL');
+      }, 1000);
     };
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -61,6 +67,7 @@ function executeCommand(command, options, signal) {
     }, commandTimeout);
     const cleanup = () => {
       clearTimeout(timeout);
+      clearTimeout(forceKillTimer);
       signal.removeEventListener('abort', terminate);
     };
     const finish = callback => {
@@ -70,6 +77,7 @@ function executeCommand(command, options, signal) {
       callback();
     };
     const collect = (stream, chunk) => {
+      if (maxBufferStream) return;
       const bytes = Buffer.byteLength(chunk);
       if (stream === 'stdout') {
         stdout += chunk;
