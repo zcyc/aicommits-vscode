@@ -13,12 +13,7 @@ This extension can replace GitHub Copilot's `Generate Commit Message`: it runs t
 Install and configure [aicommits](https://github.com/jerryshell/aicommits) first:
 
 ```bash
-git clone https://github.com/jerryshell/aicommits.git
-cd aicommits
-bun install
-bun run build
-bun link
-aicommits setup
+npm add -g @jerryshell/aicommits
 ```
 
 Verify that the command is available:
